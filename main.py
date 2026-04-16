@@ -1,89 +1,51 @@
-import os
-import logging
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 import httpx
+import os
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("mcp-proxy")
+app = FastAPI()
 
-app = FastAPI(title="MCP User-Token Proxy")
-
-TOKEN_MAP: dict[str, tuple[str, str]] = {}
-MCP_UPSTREAM = os.environ.get("MCP_UPSTREAM", "http://mcp-atlassian:9000")
-
+# Token-Mapping: Bearer Token → Confluence PAT
+USER_MAP = {}
 for key, value in os.environ.items():
     if key.startswith("USER_"):
-        username = key[5:]
         parts = value.split(":", 1)
         if len(parts) == 2:
-            innogpt_token, confluence_pat = parts
-            TOKEN_MAP[innogpt_token.strip()] = (username, confluence_pat.strip())
-            log.info(f"User geladen: {username}")
+            bearer_token, confluence_pat = parts
+            USER_MAP[bearer_token] = confluence_pat
 
-log.info(f"Proxy bereit – {len(TOKEN_MAP)} User geladen | Upstream: {MCP_UPSTREAM}")
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "users": len(TOKEN_MAP), "upstream": MCP_UPSTREAM}
+UPSTREAM = os.environ.get("MCP_UPSTREAM", "http://mcp-atlassian:9000")
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy(request: Request, path: str):
+    # Bearer Token aus Authorization Header lesen
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
-        return Response(content="Unauthorized", status_code=401)
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
-    incoming_token = auth_header.removeprefix("Bearer ").strip()
+    bearer_token = auth_header.removeprefix("Bearer ").strip()
+    confluence_pat = USER_MAP.get(bearer_token)
 
-    if incoming_token not in TOKEN_MAP:
-        return Response(content="Unauthorized", status_code=401)
+    if not confluence_pat:
+        raise HTTPException(status_code=403, detail="Unknown token")
 
-    username, confluence_pat = TOKEN_MAP[incoming_token]
-    log.info(f"✓ {username} | {request.method} /{path}")
+    # Headers weiterleiten, Authorization ersetzen
+    headers = dict(request.headers)
+    headers["Authorization"] = f"Bearer {confluence_pat}"
+    headers.pop("host", None)
 
-    forward_headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in ("authorization", "host", "content-length")
-    }
-    forward_headers["Authorization"] = f"Bearer {confluence_pat}"
-    forward_headers["X-User"] = username
+    # Request an mcp-atlassian weiterleiten
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.request(
+            method=request.method,
+            url=f"{UPSTREAM}/{path}",
+            headers=headers,
+            content=await request.body(),
+            params=request.query_params,
+        )
 
-    query = request.url.query
-    upstream_url = f"{MCP_UPSTREAM}/{path}"
-    if query:
-        upstream_url += f"?{query}"
-
-    body = await request.body()
-    accept = request.headers.get("accept", "")
-    is_streaming = "text/event-stream" in accept
-
-    async with httpx.AsyncClient(timeout=None) as client:
-        if is_streaming:
-            async def stream_response():
-                async with client.stream(
-                    request.method,
-                    upstream_url,
-                    headers=forward_headers,
-                    content=body,
-                ) as upstream:
-                    async for chunk in upstream.aiter_bytes():
-                        yield chunk
-
-            return StreamingResponse(
-                stream_response(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
-        else:
-            upstream_resp = await client.request(
-                request.method,
-                upstream_url,
-                headers=forward_headers,
-                content=body,
-            )
-            return Response(
-                content=upstream_resp.content,
-                status_code=upstream_resp.status_code,
-                headers=dict(upstream_resp.headers),
-            )
+    return StreamingResponse(
+        content=response.aiter_bytes(),
+        status_code=response.status_code,
+        headers=dict(response.headers),
+    )
