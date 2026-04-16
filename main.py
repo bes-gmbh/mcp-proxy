@@ -23,13 +23,6 @@ UPSTREAM = os.environ.get("MCP_UPSTREAM", "http://mcp-atlassian:9000")
 EXTERNAL_URL = os.environ.get("EXTERNAL_URL", "https://mcp.bes-systemhaus.de")
 logger.info(f"Proxy bereit – {len(USER_MAP)} User geladen | Upstream: {UPSTREAM}")
 
-def get_user(request: Request):
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return None, None
-    bearer_token = auth_header.removeprefix("Bearer ").strip()
-    return USER_MAP.get(bearer_token, (None, None))
-
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy(request: Request, path: str):
     auth_header = request.headers.get("Authorization", "")
@@ -52,7 +45,6 @@ async def proxy(request: Request, path: str):
     is_sse = (request.method == "GET" and path == "sse")
 
     if is_sse:
-        # SSE: Streaming mit URL-Rewriting
         async def stream_with_rewrite():
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream(
@@ -62,11 +54,12 @@ async def proxy(request: Request, path: str):
                     params=request.query_params,
                 ) as resp:
                     async for chunk in resp.aiter_bytes():
-                        # Interne URL durch externe ersetzen
+                        logger.info(f"SSE chunk: {chunk}")
                         rewritten = chunk.replace(
                             UPSTREAM.encode(),
                             EXTERNAL_URL.encode()
                         )
+                        logger.info(f"SSE rewritten: {rewritten}")
                         yield rewritten
 
         return StreamingResponse(
@@ -79,7 +72,6 @@ async def proxy(request: Request, path: str):
             }
         )
     else:
-        # Normale Requests: direkt weiterleiten
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.request(
                 method=request.method,
