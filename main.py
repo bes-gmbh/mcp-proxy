@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 import httpx
 import os
 import logging
@@ -20,7 +20,6 @@ for key, value in os.environ.items():
             logger.info(f"User geladen: {username}")
 
 UPSTREAM = os.environ.get("MCP_UPSTREAM", "http://mcp-atlassian:9000")
-EXTERNAL_URL = os.environ.get("EXTERNAL_URL", "https://mcp.bes-systemhaus.de")
 logger.info(f"Proxy bereit – {len(USER_MAP)} User geladen | Upstream: {UPSTREAM}")
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
@@ -38,50 +37,22 @@ async def proxy(request: Request, path: str):
     logger.info(f"✓ {username} | {request.method} /{path}")
 
     headers = dict(request.headers)
-    headers["Authorization"] = f"Token {confluence_pat}"
     headers.pop("host", None)
+    headers["Authorization"] = f"Token {confluence_pat}"
 
     body = await request.body()
-    is_sse = (request.method == "GET" and path == "sse")
 
-    if is_sse:
-        async def stream_with_rewrite():
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    method="GET",
-                    url=f"{UPSTREAM}/sse",
-                    headers=headers,
-                    params=request.query_params,
-                ) as resp:
-                    async for chunk in resp.aiter_bytes():
-                        logger.info(f"SSE chunk: {chunk}")
-                        rewritten = chunk.replace(
-                            UPSTREAM.encode(),
-                            EXTERNAL_URL.encode()
-                        )
-                        logger.info(f"SSE rewritten: {rewritten}")
-                        yield rewritten
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.request(
+            method=request.method,
+            url=f"{UPSTREAM}/{path}",
+            headers=headers,
+            content=body,
+            params=request.query_params,
+        )
 
-        return StreamingResponse(
-            content=stream_with_rewrite(),
-            status_code=200,
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            }
-        )
-    else:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.request(
-                method=request.method,
-                url=f"{UPSTREAM}/{path}",
-                headers=headers,
-                content=body,
-                params=request.query_params,
-            )
-        return Response(
-            content=resp.content,
-            status_code=resp.status_code,
-            headers=dict(resp.headers),
-        )
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers=dict(resp.headers),
+    )
