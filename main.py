@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 import httpx
 import os
 import logging
@@ -22,19 +22,33 @@ for key, value in os.environ.items():
 UPSTREAM = os.environ.get("MCP_UPSTREAM", "http://mcp-atlassian:9000")
 logger.info(f"Proxy bereit – {len(USER_MAP)} User geladen | Upstream: {UPSTREAM}")
 
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
-async def proxy(request: Request, path: str):
+def authenticate(request: Request):
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
-
     bearer_token = auth_header.removeprefix("Bearer ").strip()
     user_info = USER_MAP.get(bearer_token)
     if not user_info:
         raise HTTPException(status_code=403, detail="Unknown token")
+    return user_info
 
-    username, confluence_pat = user_info
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+async def proxy(request: Request, path: str):
+    username, confluence_pat = authenticate(request)
     logger.info(f"✓ {username} | {request.method} /{path}")
+
+    # GET /mcp: innoGPT versucht SSE-Verbindung – streamable-http kennt kein GET.
+    # Wir antworten mit einem minimalen SSE-Stream der sofort endet,
+    # damit innoGPT auf POST umschaltet.
+    if request.method == "GET" and path == "mcp":
+        async def empty_sse():
+            yield b": keepalive\n\n"
+        return StreamingResponse(
+            content=empty_sse(),
+            status_code=200,
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     headers = dict(request.headers)
     headers.pop("host", None)
