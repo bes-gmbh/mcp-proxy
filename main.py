@@ -38,7 +38,7 @@ async def proxy(request: Request, path: str):
     logger.info(f"✓ {username} | {request.method} /{path}")
 
     headers = dict(request.headers)
-    headers["Authorization"] = f"Bearer {confluence_pat}"
+    headers["Authorization"] = f"Token {confluence_pat}"
     headers.pop("host", None)
 
     body = await request.body()
