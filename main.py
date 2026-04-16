@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 import httpx
 import os
 import logging
@@ -20,6 +20,7 @@ for key, value in os.environ.items():
             logger.info(f"User geladen: {username}")
 
 UPSTREAM = os.environ.get("MCP_UPSTREAM", "http://mcp-atlassian:9000")
+EXTERNAL_URL = os.environ.get("EXTERNAL_URL", "https://mcp.bes-systemhaus.de")
 logger.info(f"Proxy bereit – {len(USER_MAP)} User geladen | Upstream: {UPSTREAM}")
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
@@ -41,17 +42,28 @@ async def proxy(request: Request, path: str):
     headers["Authorization"] = f"Bearer {confluence_pat}"
     headers.pop("host", None)
 
+    body = await request.body()
+
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.request(
             method=request.method,
             url=f"{UPSTREAM}/{path}",
             headers=headers,
-            content=await request.body(),
+            content=body,
             params=request.query_params,
         )
 
+    # SSE-Antwort: interne URLs ersetzen
+    content = resp.content
+    content_type = resp.headers.get("content-type", "")
+    if "text/event-stream" in content_type or path == "sse":
+        content = content.replace(
+            UPSTREAM.encode(),
+            EXTERNAL_URL.encode()
+        )
+
     return Response(
-        content=resp.content,
+        content=content,
         status_code=resp.status_code,
         headers=dict(resp.headers),
     )
