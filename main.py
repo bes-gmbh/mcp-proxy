@@ -23,6 +23,13 @@ UPSTREAM = os.environ.get("MCP_UPSTREAM", "http://mcp-atlassian:9000")
 EXTERNAL_URL = os.environ.get("EXTERNAL_URL", "https://mcp.bes-systemhaus.de")
 logger.info(f"Proxy bereit – {len(USER_MAP)} User geladen | Upstream: {UPSTREAM}")
 
+def get_user(request: Request):
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None, None
+    bearer_token = auth_header.removeprefix("Bearer ").strip()
+    return USER_MAP.get(bearer_token, (None, None))
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy(request: Request, path: str):
     auth_header = request.headers.get("Authorization", "")
@@ -31,7 +38,6 @@ async def proxy(request: Request, path: str):
 
     bearer_token = auth_header.removeprefix("Bearer ").strip()
     user_info = USER_MAP.get(bearer_token)
-
     if not user_info:
         raise HTTPException(status_code=403, detail="Unknown token")
 
@@ -43,27 +49,47 @@ async def proxy(request: Request, path: str):
     headers.pop("host", None)
 
     body = await request.body()
+    is_sse = (request.method == "GET" and path == "sse")
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.request(
-            method=request.method,
-            url=f"{UPSTREAM}/{path}",
-            headers=headers,
-            content=body,
-            params=request.query_params,
+    if is_sse:
+        # SSE: Streaming mit URL-Rewriting
+        async def stream_with_rewrite():
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    method="GET",
+                    url=f"{UPSTREAM}/sse",
+                    headers=headers,
+                    params=request.query_params,
+                ) as resp:
+                    async for chunk in resp.aiter_bytes():
+                        # Interne URL durch externe ersetzen
+                        rewritten = chunk.replace(
+                            UPSTREAM.encode(),
+                            EXTERNAL_URL.encode()
+                        )
+                        yield rewritten
+
+        return StreamingResponse(
+            content=stream_with_rewrite(),
+            status_code=200,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            }
         )
-
-    # SSE-Antwort: interne URLs ersetzen
-    content = resp.content
-    content_type = resp.headers.get("content-type", "")
-    if "text/event-stream" in content_type or path == "sse":
-        content = content.replace(
-            UPSTREAM.encode(),
-            EXTERNAL_URL.encode()
+    else:
+        # Normale Requests: direkt weiterleiten
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.request(
+                method=request.method,
+                url=f"{UPSTREAM}/{path}",
+                headers=headers,
+                content=body,
+                params=request.query_params,
+            )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
         )
-
-    return Response(
-        content=content,
-        status_code=resp.status_code,
-        headers=dict(resp.headers),
-    )
