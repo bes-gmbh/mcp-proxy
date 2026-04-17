@@ -1,3 +1,4 @@
+cat > /app/main.py << 'EOF'
 import logging
 import os
 import httpx
@@ -11,11 +12,6 @@ app = FastAPI()
 
 EXTERNAL_URL = os.getenv("EXTERNAL_URL", "http://localhost:8080")
 
-# -------------------------------------------------------
-# USER_* Env-Variablen einlesen
-# Format: USER_NAME=bearer_token:upstream_url
-# Beispiel: USER_SCHERMER=abc123:http://mcp-atlassian-schermer:9000
-# -------------------------------------------------------
 user_map: dict[str, str] = {}
 for key, value in os.environ.items():
     if key.startswith("USER_"):
@@ -42,35 +38,6 @@ def build_headers(request: Request) -> dict:
     return headers
 
 
-# -------------------------------------------------------
-# SSE Route — echtes Streaming + URL-Rewriting
-# -------------------------------------------------------
-@app.get("/sse")
-async def sse_proxy(request: Request):
-    upstream = get_upstream(request)
-    if not upstream:
-        return Response(status_code=401, content="Unauthorized")
-
-    headers = build_headers(request)
-    logger.info(f"SSE connect → {upstream}/sse")
-
-    async def stream():
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("GET", f"{upstream}/sse", headers=headers) as resp:
-                async for chunk in resp.aiter_bytes():
-                    if chunk:
-                        rewritten = chunk.replace(
-                            upstream.encode(), EXTERNAL_URL.encode()
-                        )
-                        logger.debug(f"SSE chunk: {rewritten[:200]}")
-                        yield rewritten
-
-    return StreamingResponse(stream(), media_type="text/event-stream")
-
-
-# -------------------------------------------------------
-# Alle anderen Routen — normales Forwarding
-# -------------------------------------------------------
 @app.api_route(
     "/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
@@ -102,3 +69,4 @@ async def proxy(request: Request, path: str):
         status_code=resp.status_code,
         headers=dict(resp.headers),
     )
+EOF
