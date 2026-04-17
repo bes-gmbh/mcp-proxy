@@ -1,16 +1,12 @@
-cat > /app/main.py << 'EOF'
 import logging
 import os
 import httpx
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import StreamingResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mcp-proxy")
 
 app = FastAPI()
-
-EXTERNAL_URL = os.getenv("EXTERNAL_URL", "http://localhost:8080")
 
 user_map: dict[str, str] = {}
 for key, value in os.environ.items():
@@ -69,4 +65,3 @@ async def proxy(request: Request, path: str):
         status_code=resp.status_code,
         headers=dict(resp.headers),
     )
-EOF
