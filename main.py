@@ -71,6 +71,7 @@ async def proxy(request: Request, path: str):
         )
 
     logger.info(f"Response status: {resp.status_code}")
+    logger.info(f"Response headers: {dict(resp.headers)}")
     logger.info(f"Response body raw: {resp.content[:500]}")
 
     content_type = resp.headers.get("content-type", "")
@@ -79,10 +80,18 @@ async def proxy(request: Request, path: str):
     if "text/event-stream" in content_type or response_content.startswith(b"event:"):
         response_content = extract_sse_data(response_content)
         logger.info(f"Response body extracted: {response_content[:500]}")
+
+        forward_headers = {}
+        for h in ["mcp-session-id", "x-mcp-session-id", "session-id"]:
+            if h in resp.headers:
+                forward_headers[h] = resp.headers[h]
+                logger.info(f"Forwarding session header: {h} = {resp.headers[h]}")
+        forward_headers["content-type"] = "application/json"
+
         return Response(
             content=response_content,
             status_code=resp.status_code,
-            media_type="application/json",
+            headers=forward_headers,
         )
 
     return Response(
