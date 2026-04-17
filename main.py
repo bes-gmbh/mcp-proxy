@@ -29,9 +29,11 @@ def get_upstream(request: Request) -> str | None:
 
 
 def build_headers(request: Request) -> dict:
-    headers = dict(request.headers)
-    headers.pop("host", None)
-    return headers
+    excluded = {"host", "transfer-encoding", "connection", "keep-alive", "te", "trailers", "upgrade"}
+    return {k: v for k, v in request.headers.items() if k.lower() not in excluded}
+
+
+HOP_BY_HOP = {"transfer-encoding", "connection", "keep-alive", "te", "trailers", "upgrade"}
 
 
 @app.api_route(
@@ -48,6 +50,7 @@ async def proxy(request: Request, path: str):
     url = f"{upstream}/{path}"
 
     logger.info(f"{request.method} /{path} → {url}")
+    logger.info(f"Request headers: {dict(headers)}")
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.request(
@@ -57,11 +60,15 @@ async def proxy(request: Request, path: str):
             content=body,
             params=dict(request.query_params),
         )
-        logger.info(f"Response: {resp.status_code}")
-        logger.info(f"Response body: {resp.content[:500]}")
+
+    logger.info(f"Response: {resp.status_code}")
+    logger.info(f"Response headers: {dict(resp.headers)}")
+    logger.info(f"Response body: {resp.content[:500]}")
+
+    response_headers = {k: v for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP}
 
     return Response(
         content=resp.content,
         status_code=resp.status_code,
-        headers=dict(resp.headers),
+        headers=response_headers,
     )
