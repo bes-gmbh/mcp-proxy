@@ -32,6 +32,13 @@ def authenticate(request: Request):
         raise HTTPException(status_code=403, detail="Unknown token")
     return user_info
 
+def extract_sse_data(content: bytes) -> bytes:
+    """Extrahiert den JSON-Body aus einem SSE-Response."""
+    for line in content.decode("utf-8").splitlines():
+        if line.startswith("data:"):
+            return line[5:].strip().encode("utf-8")
+    return content
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy(request: Request, path: str):
     username, confluence_pat = authenticate(request)
@@ -52,9 +59,7 @@ async def proxy(request: Request, path: str):
     headers["Authorization"] = f"Token {confluence_pat}"
 
     body = await request.body()
-
     logger.info(f"Request body: {body[:500]}")
-    logger.info(f"Forwarding Authorization: Token {confluence_pat[:10]}...")
 
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.request(
@@ -66,10 +71,22 @@ async def proxy(request: Request, path: str):
         )
 
     logger.info(f"Response status: {resp.status_code}")
-    logger.info(f"Response body: {resp.content[:500]}")
+    logger.info(f"Response body raw: {resp.content[:500]}")
+
+    content_type = resp.headers.get("content-type", "")
+    response_content = resp.content
+
+    if "text/event-stream" in content_type or response_content.startswith(b"event:"):
+        response_content = extract_sse_data(response_content)
+        logger.info(f"Response body extracted: {response_content[:500]}")
+        return Response(
+            content=response_content,
+            status_code=resp.status_code,
+            media_type="application/json",
+        )
 
     return Response(
-        content=resp.content,
+        content=response_content,
         status_code=resp.status_code,
         headers=dict(resp.headers),
     )
