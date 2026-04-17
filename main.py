@@ -37,9 +37,6 @@ async def proxy(request: Request, path: str):
     username, confluence_pat = authenticate(request)
     logger.info(f"✓ {username} | {request.method} /{path}")
 
-    # GET /mcp: innoGPT versucht SSE-Verbindung – streamable-http kennt kein GET.
-    # Wir antworten mit einem minimalen SSE-Stream der sofort endet,
-    # damit innoGPT auf POST umschaltet.
     if request.method == "GET" and path == "mcp":
         async def empty_sse():
             yield b": keepalive\n\n"
@@ -56,6 +53,9 @@ async def proxy(request: Request, path: str):
 
     body = await request.body()
 
+    logger.info(f"Request body: {body[:500]}")
+    logger.info(f"Forwarding Authorization: Token {confluence_pat[:10]}...")
+
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.request(
             method=request.method,
@@ -64,6 +64,9 @@ async def proxy(request: Request, path: str):
             content=body,
             params=request.query_params,
         )
+
+    logger.info(f"Response status: {resp.status_code}")
+    logger.info(f"Response body: {resp.content[:500]}")
 
     return Response(
         content=resp.content,
