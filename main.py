@@ -13,22 +13,22 @@ EXTERNAL_URL = os.getenv("EXTERNAL_URL", "http://localhost:8080")
 
 # -------------------------------------------------------
 # USER_* Env-Variablen einlesen
-# Format: USER_NAME=bearer_token:confluence_pat:upstream_url
-# Beispiel: USER_VERTRIEB=abc123:ATATT3x...:http://mcp-atlassian-vertrieb:9000
+# Format: USER_NAME=bearer_token:upstream_url
+# Beispiel: USER_SCHERMER=abc123:http://mcp-atlassian-schermer:9000
 # -------------------------------------------------------
-user_map: dict[str, dict] = {}
+user_map: dict[str, str] = {}
 for key, value in os.environ.items():
     if key.startswith("USER_"):
-        parts = value.split(":", 2)
-        if len(parts) == 3:
-            bearer, pat, upstream = parts
-            user_map[bearer] = {"upstream": upstream.rstrip("/"), "pat": pat}
+        parts = value.split(":", 1)
+        if len(parts) == 2:
+            bearer, upstream = parts
+            user_map[bearer] = upstream.rstrip("/")
             logger.info(f"Registered {key} → {upstream}")
         else:
-            logger.warning(f"Skipping {key}: expected format bearer:pat:upstream_url")
+            logger.warning(f"Skipping {key}: expected format bearer:upstream_url")
 
 
-def get_user(request: Request):
+def get_upstream(request: Request) -> str | None:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return None
@@ -36,11 +36,9 @@ def get_user(request: Request):
     return user_map.get(token)
 
 
-def build_upstream_headers(request: Request, pat: str) -> dict:
+def build_headers(request: Request) -> dict:
     headers = dict(request.headers)
     headers.pop("host", None)
-    headers.pop("authorization", None)
-    headers["Authorization"] = f"Bearer {pat}"
     return headers
 
 
@@ -49,13 +47,11 @@ def build_upstream_headers(request: Request, pat: str) -> dict:
 # -------------------------------------------------------
 @app.get("/sse")
 async def sse_proxy(request: Request):
-    user = get_user(request)
-    if not user:
+    upstream = get_upstream(request)
+    if not upstream:
         return Response(status_code=401, content="Unauthorized")
 
-    upstream = user["upstream"]
-    pat = user["pat"]
-    headers = build_upstream_headers(request, pat)
+    headers = build_headers(request)
     logger.info(f"SSE connect → {upstream}/sse")
 
     async def stream():
@@ -80,13 +76,11 @@ async def sse_proxy(request: Request):
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
 )
 async def proxy(request: Request, path: str):
-    user = get_user(request)
-    if not user:
+    upstream = get_upstream(request)
+    if not upstream:
         return Response(status_code=401, content="Unauthorized")
 
-    upstream = user["upstream"]
-    pat = user["pat"]
-    headers = build_upstream_headers(request, pat)
+    headers = build_headers(request)
     body = await request.body()
     url = f"{upstream}/{path}"
 
